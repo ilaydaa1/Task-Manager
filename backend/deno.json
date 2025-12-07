@@ -1,0 +1,16 @@
+{
+  "imports": {
+    "hono": "jsr:@hono/hono",
+    "drizzle-orm": "npm:drizzle-orm",
+    "@libsql/client": "npm:@libsql/client",
+    "bcryptjs": "npm:bcryptjs"
+  },
+  "compilerOptions": {
+    "lib": ["deno.ns", "deno.unstable"]
+  },
+  "tasks": {
+    "dev": "deno run -A main.ts",
+    "drizzle:generate": "deno run -A npm:drizzle-kit generate:sqlite --out ./db/migrations",
+    "drizzle:migrate": "deno run -A db/init.ts"
+  }
+}

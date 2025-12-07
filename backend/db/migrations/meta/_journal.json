@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1762662295463,
+      "tag": "0000_familiar_garia",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1764510031362,
+      "tag": "0001_freezing_rocket_racer",
+      "breakpoints": true
+    }
+  ]
+}
