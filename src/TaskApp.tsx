@@ -1,5 +1,5 @@
 // deno-lint-ignore-file
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Navbar from "./components/navbar";
 import {
   LayoutDashboard,
@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 
 const API = "http://localhost:8000/api";
+const WS_URL = "ws://localhost:8000/api/ws";
 
 /* ===============================
       REFRESH TOKEN MEKANİZMASI
@@ -30,18 +31,13 @@ async function apiFetch(url: string, options: any = {}) {
     },
   });
 
-  // 401 → refresh dene
   if (res.status === 401) {
     const refreshed = await tryRefreshToken();
     if (!refreshed) {
-      // ❗ Artık geçersiz token’ları temizliyoruz ki sonsuz loop olmasın
-      localStorage.removeItem("accessToken");
-      localStorage.removeItem("refreshToken");
       window.location.href = "/login";
-      throw new Error("Unauthorized");
+      return res;
     }
 
-    // refresh başarılı → isteği tekrar yap
     token = localStorage.getItem("accessToken");
     return fetch(url, {
       ...options,
@@ -66,12 +62,10 @@ async function tryRefreshToken() {
   });
 
   if (!res.ok) return false;
-
   const data = await res.json();
   localStorage.setItem("accessToken", data.accessToken);
   return true;
 }
-
 
 /* ===============================
         TİPLER
@@ -175,15 +169,13 @@ export default function TaskApp() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [taskMenuOpen, setTaskMenuOpen] = useState<number | null>(null);
 
-  async function reload() {
-    const url = q
-      ? `${API}/tasks?q=${encodeURIComponent(q)}`
-      : `${API}/tasks`;
+  const wsRef = useRef<WebSocket | null>(null);
 
+  async function reload() {
+    const url = q ? `${API}/tasks?q=${encodeURIComponent(q)}` : `${API}/tasks`;
     const res = await apiFetch(url);
 
     if (!res.ok) return;
-
     const data = await res.json();
     setTasks(data);
   }
@@ -192,15 +184,51 @@ export default function TaskApp() {
     reload();
   }, [q]);
 
-  const visible = useMemo(() => {
-    return filter === "all"
-      ? tasks
-      : tasks.filter((t) => t.status === filter);
-  }, [tasks, filter]);
+  // 🔔 WebSocket bağlan
+  useEffect(() => {
+    const ws = new WebSocket(WS_URL);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      console.log("WS connected");
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (
+          msg.type === "task_created" ||
+          msg.type === "task_updated" ||
+          msg.type === "task_deleted"
+        ) {
+          // Her update geldiğinde görevleri taze çek
+          reload();
+        }
+      } catch (_e) {
+        // ignore
+      }
+    };
+
+    ws.onclose = () => {
+      console.log("WS closed");
+      wsRef.current = null;
+    };
+
+    ws.onerror = () => {
+      console.log("WS error");
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, []);
+
+  const visible = useMemo(
+    () => (filter === "all" ? tasks : tasks.filter((t) => t.status === filter)),
+    [tasks, filter],
+  );
 
   const editing = tasks.find((t) => t.id === editId) || null;
-
-  /* ---------- CRUD ---------- */
 
   async function apiAdd() {
     const title = draftTitle.trim();
@@ -220,8 +248,7 @@ export default function TaskApp() {
     setDraftPriority("medium");
     setDraftStatus("todo");
     setNewOpen(false);
-
-    reload();
+    // reload();  // WS zaten herkese broadcast ediyor
   }
 
   async function apiUpdate(id: number, patch: Partial<TaskRow>) {
@@ -230,8 +257,7 @@ export default function TaskApp() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(patch),
     });
-
-    reload();
+    // reload(); // WS ile otomatik
   }
 
   async function apiDelete(id: number) {
@@ -242,7 +268,7 @@ export default function TaskApp() {
     });
 
     setTaskMenuOpen(null);
-    reload();
+    // reload(); // WS ile otomatik
   }
 
   async function saveEdit() {
@@ -260,9 +286,6 @@ export default function TaskApp() {
     return c;
   }, [tasks]);
 
-  /* ===============================
-            UI BAŞLIYOR
-  =============================== */
   return (
     <div className="min-h-screen bg-slate-50">
       <Navbar />
@@ -343,7 +366,6 @@ export default function TaskApp() {
           </div>
         </aside>
 
-        {/* Overlay */}
         {sidebarOpen && (
           <div
             className="fixed inset-0 bg-black bg-opacity-20 z-20 lg:hidden"
@@ -357,9 +379,7 @@ export default function TaskApp() {
             <div className="flex items-center justify-between mb-6">
               <div>
                 <h1 className="text-xl font-semibold">
-                  {filter === "all"
-                    ? "All Tasks"
-                    : statusConfig[filter].label}
+                  {filter === "all" ? "All Tasks" : statusConfig[filter].label}
                 </h1>
                 <p className="text-slate-500 text-sm">
                   Showing {visible.length} of {tasks.length}
@@ -494,7 +514,7 @@ export default function TaskApp() {
                           <button
                             onClick={() =>
                               setTaskMenuOpen(
-                                taskMenuOpen === t.id ? null : t.id
+                                taskMenuOpen === t.id ? null : t.id,
                               )
                             }
                             className="p-2 hover:bg-slate-100 rounded-lg"

@@ -1,4 +1,7 @@
-// ---- Simple Bloom Filter ----
+// deno-lint-ignore-file
+// @ts-nocheck
+
+// ---- Simple Bloom Filters (Access + Refresh) ----
 class BloomFilter {
   size = 1024;
   bits = new Array(1024).fill(false);
@@ -25,15 +28,12 @@ class BloomFilter {
   }
 }
 
-// 🔹 Ayrı Bloom filter'lar
+// Access token ve refresh token için ayrı Bloom filter
 const accessTokenBloom = new BloomFilter();
 const refreshTokenBloom = new BloomFilter();
 
-// deno-lint-ignore-file
-// @ts-nocheck
-
 import { Hono, Context, Next } from "jsr:@hono/hono";
-import { orm, saveDb } from "../db/connection.ts";
+import { getDb, saveDb } from "../db/connection.ts";
 import { users } from "../db/schema.ts";
 import bcrypt from "npm:bcryptjs";
 import { eq } from "npm:drizzle-orm";
@@ -45,7 +45,7 @@ import {
 
 export const authRoute = new Hono();
 
-// SECRET KEY
+// SECRET KEY (HMAC SHA-256)
 const KEY = await crypto.subtle.importKey(
   "raw",
   new TextEncoder().encode("mysecret"),
@@ -64,24 +64,30 @@ authRoute.post("/register", async (c) => {
     return c.json({ error: "Email and password required" }, 400);
   }
 
-  const existing = await orm
-    .select()
-    .from(users)
-    .where(eq(users.email, email));
+  const { orm, release } = await getDb();
+  try {
+    // Email daha önce var mı?
+    const existing = await orm
+      .select()
+      .from(users)
+      .where(eq(users.email, email));
 
-  if (existing.length > 0) {
-    return c.json({ error: "User already exists" }, 400);
+    if (existing.length > 0) {
+      return c.json({ error: "User already exists" }, 400);
+    }
+
+    const passwordHash = bcrypt.hashSync(password);
+
+    await orm.insert(users).values({
+      email,
+      passwordHash,
+    });
+
+    await saveDb();
+    return c.json({ message: "User created" }, 201);
+  } finally {
+    release();
   }
-
-  const passwordHash = bcrypt.hashSync(password);
-
-  await orm.insert(users).values({
-    email,
-    passwordHash,
-  });
-
-  await saveDb();
-  return c.json({ message: "User created" }, 201);
 });
 
 /* ===========================
@@ -90,67 +96,74 @@ authRoute.post("/register", async (c) => {
 authRoute.post("/login", async (c) => {
   const { email, password } = await c.req.json();
 
-  const rows = await orm.select().from(users).where(eq(users.email, email));
+  const { orm, release } = await getDb();
+  try {
+    const rows = await orm
+      .select()
+      .from(users)
+      .where(eq(users.email, email));
 
-  if (rows.length === 0) {
-    return c.json({ error: "Invalid email or password" }, 400);
+    if (rows.length === 0) {
+      return c.json({ error: "Invalid email or password" }, 400);
+    }
+
+    const user = rows[0];
+    const ok = bcrypt.compareSync(password, user.passwordHash);
+
+    if (!ok) {
+      return c.json({ error: "Invalid email or password" }, 400);
+    }
+
+    // --- ACCESS TOKEN (ör: 15 dk) ---
+    const accessPayload = {
+      userId: user.id,
+      email: user.email,
+      exp: getNumericDate(60 * 15),
+    };
+
+    const accessToken = await create(
+      { alg: "HS256", typ: "JWT" },
+      accessPayload,
+      KEY,
+    );
+
+    // --- REFRESH TOKEN (ör: 7 gün) ---
+    const refreshPayload = {
+      userId: user.id,
+      email: user.email,
+      exp: getNumericDate(60 * 60 * 24 * 7),
+    };
+
+    const refreshToken = await create(
+      { alg: "HS256", typ: "JWT" },
+      refreshPayload,
+      KEY,
+    );
+
+    return c.json({
+      accessToken,
+      refreshToken,
+    });
+  } finally {
+    release();
   }
-
-  const user = rows[0];
-  const ok = bcrypt.compareSync(password, user.passwordHash);
-
-  if (!ok) {
-    return c.json({ error: "Invalid email or password" }, 400);
-  }
-
-  // --- ACCESS TOKEN (15 dk) ---
-  const accessPayload = {
-    userId: user.id,
-    email: user.email,
-    exp: getNumericDate(60 * 15),
-  };
-
-  const accessToken = await create(
-    { alg: "HS256", typ: "JWT" },
-    accessPayload,
-    KEY,
-  );
-
-  // --- REFRESH TOKEN (7 gün) ---
-  const refreshPayload = {
-    userId: user.id,
-    email: user.email,
-    exp: getNumericDate(60 * 60 * 24 * 7),
-  };
-
-  const refreshToken = await create(
-    { alg: "HS256", typ: "JWT" },
-    refreshPayload,
-    KEY,
-  );
-
-  return c.json({
-    accessToken,
-    refreshToken,
-  });
 });
 
 /* ===========================
-   LOGOUT  (access + refresh revoke)
+   LOGOUT
+   - Access token'ı Bloom'a ekle
+   - Refresh token geldiyse onu da Bloom'a ekle
 =========================== */
 authRoute.post("/logout", async (c) => {
   const header = c.req.header("Authorization");
-  const accessToken = header?.replace("Bearer ", "");
+  const token = header?.replace("Bearer ", "");
 
   const body = await c.req.json().catch(() => ({}));
   const refreshToken = body?.refreshToken as string | undefined;
 
-  // access token'ı bloom filter'a ekle
-  if (accessToken) {
-    accessTokenBloom.add(accessToken);
+  if (token) {
+    accessTokenBloom.add(token);
   }
-
-  // refresh token'ı da ayrı bloom filter'a ekle (BONUS)
   if (refreshToken) {
     refreshTokenBloom.add(refreshToken);
   }
@@ -168,15 +181,15 @@ authRoute.post("/refresh", async (c) => {
     return c.json({ error: "refreshToken required" }, 400);
   }
 
-  // 1) Önce revoke edilmiş mi diye bloom filter'a bak
+  // Daha önce logout ile blacklist edilmiş mi?
   if (refreshTokenBloom.has(refreshToken)) {
-    return c.json({ error: "Refresh token revoked" }, 401);
+    return c.json({ error: "Refresh token blacklisted" }, 401);
   }
 
   try {
     const payload = await verify(refreshToken, KEY);
 
-    // 2) Token geçerliyse yeni access token üret
+    // Yeni access token üret
     const newAccessToken = await create(
       { alg: "HS256", typ: "JWT" },
       {
@@ -188,8 +201,9 @@ authRoute.post("/refresh", async (c) => {
     );
 
     return c.json({ accessToken: newAccessToken });
-  } catch {
-    // Hatalı / süresi geçmiş refresh token'ı da "kötü" diye işaretleyelim
+  } catch (_err) {
+    // Hatalı / expire olmuş refresh token'ı da Bloom'a ekleyip
+    // “muhtemel brute-force” gibi düşünebilirsin (bonus olarak anlatabilirsin)
     refreshTokenBloom.add(refreshToken);
     return c.json({ error: "Invalid refresh token" }, 401);
   }
@@ -197,6 +211,8 @@ authRoute.post("/refresh", async (c) => {
 
 /* ===========================
    AUTH MIDDLEWARE
+   - Access token kontrolü
+   - Bloom ile blacklist kontrolü
 =========================== */
 export const authMiddleware = async (c: Context, next: Next) => {
   const header = c.req.header("Authorization");
@@ -207,7 +223,7 @@ export const authMiddleware = async (c: Context, next: Next) => {
 
   const token = header.replace("Bearer ", "");
 
-  // Access token bloom filter kontrolü
+  // Access token Bloom'da mı? (blacklist)
   if (accessTokenBloom.has(token)) {
     return c.json({ error: "Blacklisted token" }, 401);
   }
@@ -215,7 +231,7 @@ export const authMiddleware = async (c: Context, next: Next) => {
   try {
     const payload = await verify(token, KEY);
     c.set("user", payload);
-  } catch {
+  } catch (_err) {
     return c.json({ error: "Invalid or expired token" }, 401);
   }
 

@@ -11,6 +11,7 @@ import { logger } from "./middleware/logger.ts";
 
 import { tasksRoute } from "./routes/tasks.ts";
 import { authRoute } from "./routes/auth.ts";
+import { wsRoute } from "./ws.ts"; // ✅ WebSocket route
 
 import { DB_URL, PORT } from "./config/env.ts";
 
@@ -49,12 +50,15 @@ app.doc("/openapi.json", {
 });
 
 // Middlewares
-app.use("*", cors({
-  origin: "*",
-  allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowHeaders: ["content-type", "authorization"],
-  exposeHeaders: ["location"],
-}));
+app.use(
+  "*",
+  cors({
+    origin: "*",
+    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowHeaders: ["content-type", "authorization"],
+    exposeHeaders: ["location"],
+  }),
+);
 
 app.use("*", logger);
 tasksRoute.use("*", logger);
@@ -62,11 +66,12 @@ tasksRoute.use("*", logger);
 // ROUTES
 app.route("/api/auth", authRoute);
 app.route("/api/tasks", tasksRoute);
+app.route("/api/ws", wsRoute); // ✅ WebSocket endpoint
 
 // Basit hello
 app.get("/api/hello", (c) => c.json({ msg: "Hello from Hono + LibSQL ✅" }));
 
-// Demo tasks endpoint (sadece örnek, istersen silebilirsin)
+// Demo tasks endpoint
 app.openapi(
   {
     method: "get",
@@ -106,7 +111,7 @@ app.get("/docs", (c) =>
 <div id="swagger"></div>
 <script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js"></script>
 <script>SwaggerUIBundle({url:'/openapi.json',dom_id:'#swagger'});</script>
-</body></html>`)
+</body></html>`),
 );
 
 // Start server

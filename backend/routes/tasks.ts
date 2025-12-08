@@ -1,9 +1,8 @@
 // deno-lint-ignore-file
 import { Hono } from "jsr:@hono/hono";
 import { eq, like, and } from "npm:drizzle-orm";
-import { orm } from "../db/drizzle.ts";
 import { tasks } from "../db/schema.ts";
-import { saveDb } from "../db/connection.ts";
+import { getDb, saveDb } from "../db/connection.ts";
 import { authMiddleware } from "./auth.ts";
 
 export const tasksRoute = new Hono();
@@ -63,40 +62,51 @@ tasksRoute.get("/", async (c) => {
     return c.json({ error: "no user in context" }, 500);
   }
 
-  // Arama varsa cache kullanmıyoruz (basit olsun diye)
-  if (q && q.length > 0) {
-    const filtered = await orm
+  const { orm, release } = await getDb();
+  try {
+    // Arama varsa cache kullanmıyoruz
+    if (q && q.length > 0) {
+      const filtered = await orm
+        .select()
+        .from(tasks)
+        .where(
+          and(
+            eq(tasks.userId, user.userId),
+            like(tasks.title, `%${q}%`),
+          ),
+        );
+
+      console.log(
+        "GET /api/tasks?q=... → DB (search, no cache) user",
+        user.userId,
+      );
+      return c.json(filtered);
+    }
+
+    // ÖNCE CACHE KONTROL
+    const cached = getCachedTasks(user.userId);
+    if (cached) {
+      console.log(
+        "GET /api/tasks → CACHE kullanılıyor, user",
+        user.userId,
+      );
+      return c.json(cached);
+    }
+
+    // Cache yoksa DB'den çek
+    console.log("GET /api/tasks → DB'den çekiliyor, user", user.userId);
+    const all = await orm
       .select()
       .from(tasks)
-      .where(
-        and(
-          eq(tasks.userId, user.userId),
-          like(tasks.title, `%${q}%`),
-        ),
-      );
+      .where(eq(tasks.userId, user.userId));
 
-    console.log("GET /api/tasks?q=... → DB (search, no cache) user", user.userId);
-    return c.json(filtered);
+    // Cache'e yaz
+    setCachedTasks(user.userId, all);
+
+    return c.json(all);
+  } finally {
+    release();
   }
-
-  // ÖNCE CACHE KONTROL
-  const cached = getCachedTasks(user.userId);
-  if (cached) {
-    console.log("GET /api/tasks → CACHE kullanılıyor, user", user.userId);
-    return c.json(cached);
-  }
-
-  // Cache yoksa DB'den çek
-  console.log("GET /api/tasks → DB'den çekiliyor, user", user.userId);
-  const all = await orm
-    .select()
-    .from(tasks)
-    .where(eq(tasks.userId, user.userId));
-
-  // Cache'e yaz
-  setCachedTasks(user.userId, all);
-
-  return c.json(all);
 });
 
 /* ============================
@@ -107,31 +117,37 @@ tasksRoute.post("/", async (c) => {
   const user = c.get("user") as { userId: number };
   const body = await c.req.json().catch(() => ({}));
 
-  const title = String(body.title ?? "").trim();
-  if (!title) return c.json({ error: "title required" }, 400);
+  const { orm, release } = await getDb();
 
-  const priority = (body.priority ?? "medium") as string;
-  const status = (body.status ?? "todo") as string;
-  const module = (body.module ?? null) as string | null;
+  try {
+    const title = String(body.title ?? "").trim();
+    if (!title) return c.json({ error: "title required" }, 400);
 
-  const inserted = await orm
-    .insert(tasks)
-    .values({
-      title,
-      priority,
-      status,
-      module,
-      userId: user.userId,
-    } as any)
-    .returning()
-    .get();
+    const priority = (body.priority ?? "medium") as string;
+    const status = (body.status ?? "todo") as string;
+    const module = (body.module ?? null) as string | null;
 
-  await saveDb();
+    const inserted = await orm
+      .insert(tasks)
+      .values({
+        title,
+        priority,
+        status,
+        module,
+        userId: user.userId,
+      } as any)
+      .returning()
+      .get();
 
-  // Bu kullanıcının task cache’ini temizle
-  invalidateTasksCache(user.userId);
+    await saveDb();
 
-  return c.json(inserted, 201);
+    // Bu kullanıcının task cache’ini temizle
+    invalidateTasksCache(user.userId);
+
+    return c.json(inserted, 201);
+  } finally {
+    release();
+  }
 });
 
 /* ============================
@@ -145,39 +161,45 @@ tasksRoute.put("/:id", async (c) => {
 
   const patch = await c.req.json().catch(() => ({}));
 
-  // Task gerçekten bu kullanıcıya mı ait?
-  const existing = await orm
-    .select()
-    .from(tasks)
-    .where(eq(tasks.id, id));
+  const { orm, release } = await getDb();
 
-  if (!existing.length || existing[0].userId !== user.userId) {
-    return c.json({ error: "not allowed" }, 403);
+  try {
+    // Task gerçekten bu kullanıcıya mı ait?
+    const existing = await orm
+      .select()
+      .from(tasks)
+      .where(eq(tasks.id, id));
+
+    if (!existing.length || existing[0].userId !== user.userId) {
+      return c.json({ error: "not allowed" }, 403);
+    }
+
+    // id ve userId değiştirilmesin
+    const { id: _ignore, userId: _ignore2, ...safePatch } = patch;
+
+    await orm
+      .update(tasks)
+      .set(safePatch as any)
+      .where(eq(tasks.id, id))
+      .run();
+
+    const updated = await orm
+      .select()
+      .from(tasks)
+      .where(eq(tasks.id, id))
+      .get();
+
+    await saveDb();
+
+    // Cache invalidate
+    invalidateTasksCache(user.userId);
+
+    if (!updated) return c.json({ error: "not found" }, 404);
+
+    return c.json(updated);
+  } finally {
+    release();
   }
-
-  // id ve userId değiştirilmesin
-  const { id: _ignore, userId: _ignore2, ...safePatch } = patch;
-
-  await orm
-    .update(tasks)
-    .set(safePatch as any)
-    .where(eq(tasks.id, id))
-    .run();
-
-  const updated = await orm
-    .select()
-    .from(tasks)
-    .where(eq(tasks.id, id))
-    .get();
-
-  await saveDb();
-
-  // Cache invalidate
-  invalidateTasksCache(user.userId);
-
-  if (!updated) return c.json({ error: "not found" }, 404);
-
-  return c.json(updated);
 });
 
 /* ============================
@@ -189,20 +211,26 @@ tasksRoute.delete("/:id", async (c) => {
   const id = Number(c.req.param("id"));
   if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
 
-  const existing = await orm
-    .select()
-    .from(tasks)
-    .where(eq(tasks.id, id));
+  const { orm, release } = await getDb();
 
-  if (!existing.length || existing[0].userId !== user.userId) {
-    return c.json({ error: "not allowed" }, 403);
+  try {
+    const existing = await orm
+      .select()
+      .from(tasks)
+      .where(eq(tasks.id, id));
+
+    if (!existing.length || existing[0].userId !== user.userId) {
+      return c.json({ error: "not allowed" }, 403);
+    }
+
+    await orm.delete(tasks).where(eq(tasks.id, id)).run();
+    await saveDb();
+
+    // Cache invalidate
+    invalidateTasksCache(user.userId);
+
+    return c.json({ ok: true });
+  } finally {
+    release();
   }
-
-  await orm.delete(tasks).where(eq(tasks.id, id)).run();
-  await saveDb();
-
-  // Cache invalidate
-  invalidateTasksCache(user.userId);
-
-  return c.json({ ok: true });
 });
