@@ -1,73 +1,68 @@
-# React + TypeScript + Vite
+# Task Manager (Full-Stack)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A full-stack task management application with secure authentication and
+user-specific data handling.  
+The system supports registration, login, logout, token-based authentication,
+and performance-oriented backend components.
 
-Currently, two official plugins are available:
+## Key Features
+- User registration, login and logout
+- JWT-based authentication
+- Access token + refresh token flow
+- Secure token refresh mechanism
+- User-specific task management
+- Caching layer for optimized access
+- Bloom filter usage for efficient checks
+- Database migrations
+- Connection pooling support
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Tech Stack
 
-## React Compiler
+### Frontend
+- React
+- TypeScript
+- Vite
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+### Backend
+- TypeScript (Deno)
+- JWT authentication (access & refresh tokens)
+- Cache layer
+- Bloom filter
+- Database migrations
 
-## Expanding the ESLint configuration
+### Database
+- SQLite (default: `file:./db/tasks.db`)
+- Database location configurable via environment variables
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Authentication Flow
+- Users authenticate via login endpoint
+- Backend issues:
+  - Access Token (short-lived)
+  - Refresh Token (long-lived)
+- Access token is used for protected requests
+- Refresh token is used to generate a new access token when expired
+- Logout invalidates the refresh token
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## Environment Variables (Backend)
+- `DATABASE_URL` (default: `file:./db/tasks.db`)
+- `JWT_SECRET` (default: `dev-secret`)
+- `PORT` (default: `8000`)
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+## Project Structure
+- `/src` → frontend (React + TypeScript)
+- `/backend` → backend service
+  - authentication & token logic
+  - cache & bloom filter logic
+  - database and migrations
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## How to Run
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Backend:
+cd backend
+deno run -A main.ts
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+
+Frontend:
+npm install
+npm run dev
