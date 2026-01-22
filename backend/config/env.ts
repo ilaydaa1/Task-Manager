@@ -12,10 +12,7 @@ export function get(key: string, def?: string): string {
   return v;
 }
 
-// Buradan itibaren projede kullanacağımız config değişkenleri
 
-// 🔴 Önemli: libsql client "sqlite://" şemasını desteklemiyor.
-// Bu yüzden default değeri "file:./db/tasks.db" yaptık.
 export const DB_URL = get("DATABASE_URL", "file:./db/tasks.db");
 
 // JWT için secret (development için default var)
